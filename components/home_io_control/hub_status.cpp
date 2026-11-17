@@ -481,7 +481,8 @@ void IOHomeControlComponent::schedule_device_polls_(const std::vector<std::strin
 void IOHomeControlComponent::act_on_foreign_frame_(const std::string &device_id, ForeignFrameKind kind,
                                                    const std::string &controller, uint8_t cmd) {
   const IoDevice *dev = this->get_device(device_id);
-  if (dev == nullptr)
+  // A heat pump hears its room thermostats every ~90 s and has no status profile: never read it for that.
+  if (dev == nullptr || dev->type == DeviceType::HEAT_PUMP)
     return;
   const uint32_t now = millis();
   const char *what = kind == ForeignFrameKind::DEVICE_CHALLENGE_TO_OTHER ? "challenge" : command_name(cmd);
@@ -860,6 +861,9 @@ void IOHomeControlComponent::handle_oneway_frame_(const IoFrame &frame, uint32_t
 void IOHomeControlComponent::on_overheard_frame(const IoFrame &frame, const RadioRxPacket & /*packet*/,
                                                 int16_t rssi_dbm, uint32_t now) {
   this->oneway_receiver_.keep_overheard(frame, now, rssi_dbm);
+  // Frames heard while the hub waits for an answer come here, not through process_received_packet_(): a
+  // thermostat writing to the heat pump during one of our reads must still hold the reads off.
+  this->atlantic_reader_.on_frame(frame);
 }
 
 void IOHomeControlComponent::drain_overheard_oneway_frames_() {
@@ -878,6 +882,9 @@ void IOHomeControlComponent::process_received_packet_(const RadioRxPacket &packe
   }
 
   detail::log_component_capture(this->radio_, "parse_ok", packet.data, packet.len, &frame);
+
+  // Another controller's data transport (a TaHoma, even one sharing this hub's id): Atlantic reads hold off.
+  this->atlantic_reader_.on_frame(frame);
 
   // === Key-extraction responder ("Recover System Key") ===
   // Runs before the exchange-internal drop below: a hub-issued 0x3C challenging our own 0x37 is

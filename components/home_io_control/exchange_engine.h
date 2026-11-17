@@ -9,7 +9,8 @@
 ///   - `send_and_receive()` — retry loop with challenge/response support.
 ///   - `authenticate_request()` — verify a device-initiated command via HMAC.
 ///   - `collect_broadcast_responses()` — send once, report every matching reply in a window.
-///   - Transmit with LBT (listen-before-talk) and frequency hopping.
+///   - Transmit with LBT (listen-before-talk): a request's channel access (a free channel, never a
+///     send onto a busy one, ADR 0096) and the fixed-channel check of the other senders; frequency hopping.
 ///   - Exchange debug snapshot captured on every attempt.
 ///
 /// The engine holds double-pointer and raw-pointer references to its owner's
@@ -22,6 +23,7 @@
 /// `PairingEngine` holds a direct reference for its own exchanges.
 
 #include "hub_exchange.h"
+#include "decisions_channel.h"
 #include "decisions_exchange.h"
 #include "decisions_attempts.h"
 #include "overheard_frame_observer.h"
@@ -107,7 +109,9 @@ class ExchangeEngine {
   ///        plans every exchange itself, and an attempt count outside [1, EXCHANGE_MAX_ATTEMPTS] is
   ///        never run because the plan builders (decisions::attempt_plan_for_tries(),
   ///        decisions::attempt_plan()) never give one. An attempt that cannot finish inside
-  ///        `exchange_total_budget_ms` is not started whatever the plan says (try_fits_budget_()).
+  ///        `exchange_total_budget_ms` is not started whatever the plan says (try_fits_budget_()),
+  ///        except in a plan bounded by its attempt count: a wake-up exchange to a low-power target
+  ///        runs all its attempts (decisions::obeys_time_budget(), ADR 0095).
   ///        The attempt plan and the preamble choice are made once, here, from the options.
   /// @return What the device actually told us — see @ref ExchangeOutcome.
   ExchangeOutcome send_and_receive(const IoFrame &request, IoFrame &response, uint32_t freq,
@@ -117,8 +121,8 @@ class ExchangeEngine {
   struct AttemptRun {
     decisions::AttemptPlan plan;  ///< Number of tries, gap before each further try and the listen windows.
     /// Transmit time of one try (tx_time_ms()). When set, a try after the first starts only if it
-    /// fits `exchange_total_budget_ms` plus the plan's allowance (the rule send_and_receive()
-    /// applies); empty runs the plan's tries whatever they cost.
+    /// fits `exchange_total_budget_ms` (the rule send_and_receive() applies; a plan bounded by its
+    /// attempt count skips it, decisions::obeys_time_budget()); empty runs the plan's tries whatever they cost.
     std::optional<uint32_t> budgeted_tx_ms;
   };
 
@@ -153,11 +157,10 @@ class ExchangeEngine {
   /// @param freq           RF channel the request goes out on (Hz).
   /// @param preamble       Preamble the request is sent with, in bytes.
   /// @param last_window_ms Listen time of the last attempt, or 0 for `exchange_start_response_wait_ms`.
-  /// @param short_lead_tx_ms Transmit time of a short lead attempt when the plan leads with one
-  ///                       (decisions::attempt_plan()); empty for none.
+  /// @param with_short_lead True when the plan leads with a short attempt (decisions::attempt_plan()).
   [[nodiscard]] decisions::AttemptPlan plan_attempts(decisions::ReadKind kind, bool low_power, const IoFrame &request,
                                                      uint32_t freq, uint16_t preamble, uint16_t last_window_ms = 0,
-                                                     std::optional<uint32_t> short_lead_tx_ms = std::nullopt) const;
+                                                     bool with_short_lead = false) const;
 
   /// Authenticate an inbound device command via 0x3C challenge / 0x3D HMAC.
   /// @param request The received inbound frame (e.g., CMD_STATUS_UPDATE).
@@ -212,7 +215,7 @@ class ExchangeEngine {
   ///
   /// The engine owns the TX-complete instant and the received packet; the caller cannot
   /// reconstruct either on its own (its own `millis()` taken before the call would include the
-  /// transmit itself — up to ~213 ms for a LONG_PREAMBLE start frame — and skew latency figures).
+  /// transmit itself — hundreds of milliseconds behind a wake-up preamble — and skew latency figures).
   struct BroadcastReplyInfo {
     int16_t rssi_dbm{0};      ///< RSSI of this reply (from the radio's last capture).
     uint32_t rx_freq_hz{0};   ///< Channel the reply was received on (RadioRxPacket::freq_hz).
@@ -301,21 +304,38 @@ class ExchangeEngine {
   // Infrastructure delegated from the hub
   // -------------------------------------------------------------------------
 
-  /// Transmit a raw IoFrame with the given preamble length. A frame that opens a session (CTRL0
-  /// START) listens before talk on the TX channel itself (the radio checks it inside send_packet();
-  /// see RadioTxConfig::cca_threshold_dbm); a frame without START answers within a session and goes
-  /// out at once, unchecked (ADR 0045).
+  /// Transmit a raw IoFrame with the given preamble length, on the channel the caller names. A frame
+  /// that opens a session (CTRL0 START) listens before talk on the TX channel itself (the radio
+  /// checks it inside send_packet(); see RadioTxConfig::cca_threshold_dbm): LBT_MAX_RETRIES checks
+  /// LBT_RETRY_DELAY_MS apart, then one send without a check. A frame without START answers within
+  /// a session and goes out at once, unchecked (ADR 0045). This is the access of the senders that
+  /// keep a fixed channel; the requests of send_and_receive() take a free channel instead
+  /// (ChannelAccess::FREE_CHANNEL, ADR 0096).
   /// @param frame    Frame to transmit.
   /// @param freq     RF frequency in Hz.
-  /// @param preamble Preamble length in bytes (e.g. `LONG_PREAMBLE`, `SHORT_PREAMBLE`, or a
-  ///        tuning-configured value such as `normal_start_preamble`).
+  /// @param preamble Preamble length in programmed bytes (e.g. `LONG_PREAMBLE`, `SHORT_PREAMBLE`, or a
+  ///        tuning-configured duration converted with preamble_bytes_for_ms()).
   /// @return true if the radio accepted the packet; false otherwise.
   bool transmit_frame(const IoFrame &frame, uint32_t freq, uint16_t preamble);
 
+  /// Programmed preamble bytes that last @p ms milliseconds on the active radio. The one door every
+  /// preamble duration of the tuning passes through on its way to a transmit (ADR 0097); it forwards
+  /// to RadioDriver::preamble_bytes_for_ms().
+  /// @param ms Duration in milliseconds.
+  /// @return Preamble length in bytes.
+  [[nodiscard]] uint16_t preamble_bytes_for_ms(float ms) const;
+
+  /// The start preamble (`start_preamble_ms`) of a directed start frame to a mains target, in bytes.
+  [[nodiscard]] uint16_t start_preamble() const;
+
+  /// The wake-up preamble (`low_power_wake_ms`) of a start frame to a resting low-power target, in bytes.
+  [[nodiscard]] uint16_t wake_preamble() const;
+
   /// Preamble length for an outbound request frame. A non-start frame keeps the chip's short
-  /// response preamble. A start frame gets `LONG_PREAMBLE` only when it carries `CTRL1_LOW_POWER`
-  /// (its target is a duty-cycled receiver that must be woken); every other start frame gets the
-  /// runtime-tunable `normal_start_preamble`. For a directed frame, the target's per-device
+  /// response preamble. A start frame gets the tunable wake-up preamble `low_power_wake_ms` only
+  /// when it carries `CTRL1_LOW_POWER` (its target is a duty-cycled receiver that must be woken); every
+  /// other start frame gets the
+  /// runtime-tunable `start_preamble_ms`. For a directed frame, the target's per-device
   /// `low_power` property sets the bit; for the roll-call broadcast, the pass being sent sets it (see
   /// `ManagementActions::scan_paired_devices()`).
   ///
@@ -403,7 +423,7 @@ class ExchangeEngine {
   /// belief (decisions::wake_belief(), gated by the `low_power_wake_belief` tuning switch) and the
   /// re-send of an unconfirmed CMD_EXECUTE (decisions::retry_after_unconfirmed_accept_is_safe()), so
   /// each decision lives in one place. With no provider installed every low-power exchange keeps
-  /// `LONG_PREAMBLE` on every try.
+  /// the wake-up preamble (`low_power_wake_ms`) on every try.
   /// @param provider Evidence lookup, or an empty function to detach.
   void set_target_evidence_provider(TargetEvidenceProvider provider) {
     this->target_evidence_provider_ = std::move(provider);
@@ -436,6 +456,15 @@ class ExchangeEngine {
   void set_wake_evidence_spent_handler(WakeEvidenceSpentHandler handler) {
     this->wake_evidence_spent_handler_ = std::move(handler);
   }
+
+  /// @brief Source of the random numbers channel access draws its channels and back-offs from.
+  using RandomSource = std::function<uint32_t()>;
+
+  /// Install the random source. Installed once, when the hub is constructed (ESPHome's
+  /// random_uint32() on firmware, a scripted double in tests). With none installed every draw is 0:
+  /// the first channel of decisions::REQUEST_CHANNELS and the shortest back-off.
+  /// @param source Random numbers, or an empty function to detach.
+  void set_random_source(RandomSource source) { this->random_source_ = std::move(source); }
 
   // -------------------------------------------------------------------------
   // Exchange debug snapshot
@@ -532,9 +561,11 @@ class ExchangeEngine {
   /// exchange-level health — wiring it to a sensor or log line at that point is a small,
   /// self-contained addition, not a redesign.
   struct Counters {
-    uint32_t lbt_retries{0};            ///< transmit_frame() LBT backoff iterations (channel busy);
-                                        ///< covers pairing traffic too, via pairing_engine.cpp's
-                                        ///< own transmit_frame() calls.
+    uint32_t lbt_retries{0};            ///< Busy channel checks (fixed-channel back-offs and the checks of
+                                        ///< a request's channel access); covers pairing traffic too, via
+                                        ///< pairing_engine.cpp's own transmit_frame() calls.
+    uint32_t channel_busy_attempts{0};  ///< Attempts of send_and_receive() that ended as "channel busy":
+                                        ///< the access time ran out and nothing was sent (ADR 0096).
     uint32_t retransmits{0};            ///< TX attempts beyond the first of send_and_receive() and of
                                         ///< run_attempts() (pairing's retry loops).
     uint32_t challenge_round_trips{0};  ///< Completed 0x3C/0x3D challenge-response cycles, either
@@ -582,17 +613,13 @@ class ExchangeEngine {
   /// @param window_ms    How long the try then listens for the first reply.
   /// @param auth_tail_ms What a challenged try adds (final_reply_tail_ms_()) once the target has
   ///                     challenged in this exchange, otherwise 0.
-  /// @param allowance_ms What the plan lets the exchange run past the budget
-  ///                     (decisions::AttemptPlan::budget_allowance_ms), 0 for none.
   [[nodiscard]] bool try_fits_budget_(uint32_t elapsed_ms, uint32_t gap_ms, uint32_t tx_ms, uint32_t window_ms,
-                                      uint32_t auth_tail_ms, uint32_t allowance_ms = 0) const;
+                                      uint32_t auth_tail_ms) const;
 
   /// What the budget rule needs of one try; see begin_try_().
   struct TryBudget {
     uint32_t tx_ms{0};         ///< The try's transmit time (tx_time_ms()).
     uint32_t auth_tail_ms{0};  ///< What a challenged try adds (final_reply_tail_ms_()), 0 before a challenge.
-    uint32_t allowance_ms{0};  ///< Time the exchange may run past the budget
-                               ///< (decisions::AttemptPlan::budget_allowance_ms).
   };
 
   /// The step before a try, shared by send_and_receive() and run_attempts(): for a try after the
@@ -613,9 +640,65 @@ class ExchangeEngine {
   /// The wait has just received @p packet, so the radio's last capture is its own: its RSSI goes along.
   void report_overheard_(const IoFrame &frame, const RadioRxPacket &packet);
 
-  /// Transmit one request attempt and update context state on failure.
-  bool transmit_request_(const IoFrame &request, uint32_t freq, uint16_t preamble,
-                         exchange::OutboundExchangeContext &ctx);
+  /// How a request's transmit ended and where: the channel it went out on, or was last checked on.
+  struct RequestTransmit {
+    decisions::ChannelAccessStatus status{decisions::ChannelAccessStatus::FAILED};  ///< How it ended.
+    uint32_t freq_hz{0};                                                            ///< Channel (Hz).
+  };
+
+  /// Put one request attempt on the air as the exchange's channel access says, record the outcome in
+  /// the debug snapshot and the counters, and keep the channel it used in `ctx.request_freq`.
+  /// @param request       The request (only a frame that opens a session takes the free-channel access).
+  /// @param freq          The caller's channel: where a fixed-channel or low-power request goes.
+  /// @param preamble      Start preamble in bytes.
+  /// @param access        The exchange's channel access (ExchangeOptions::channel_access).
+  /// @param previous_freq Channel of the previous attempt (0 for the first); a free-channel request avoids it.
+  /// @param ctx           The attempt's context; its state turns FAILED unless the request was sent.
+  /// @return How the transmit ended; anything but SENT and SENT_FORCED ends the attempt.
+  decisions::ChannelAccessStatus transmit_request_(const IoFrame &request, uint32_t freq, uint16_t preamble,
+                                                   ChannelAccess access, uint32_t previous_freq,
+                                                   exchange::OutboundExchangeContext &ctx);
+
+  /// The free-channel access of a request (ADR 0096): check a channel, move to another one on a busy
+  /// result after a random, growing back-off, and send only where the check found it free, until the
+  /// access time (decisions::channel_access_budget_ms()) is spent. Ends as CHANNEL_BUSY then, unless
+  /// `lbt_force_when_busy` sends on the quietest channel.
+  /// @param frame         The request; its low-power flag decides the channel rule and the access time.
+  /// @param own_freq      The channel a low-power request stays on.
+  /// @param preamble      Start preamble in bytes.
+  /// @param previous_freq Channel to avoid on the first check (the previous attempt's), 0 for none.
+  [[nodiscard]] RequestTransmit transmit_with_channel_access_(const IoFrame &frame, uint32_t own_freq,
+                                                              uint16_t preamble, uint32_t previous_freq);
+
+  /// One channel check on `tx_config.freq_hz` and, when it finds the channel free, the send: up to
+  /// CHANNEL_CHECK_READINGS readings CHANNEL_CHECK_READING_GAP_MS apart, the last of them the radio's
+  /// own inside send_packet().
+  /// @param buf       Serialized frame.
+  /// @param len       Its length.
+  /// @param tx_config The transmission; its clear-channel threshold is set here.
+  /// @return SENT or FAILED from the radio, or CHANNEL_BUSY with the level that made it busy.
+  [[nodiscard]] TxResult check_channel_and_send_(const uint8_t *buf, uint8_t len, RadioTxConfig &tx_config);
+
+  /// Receive for @p ms on the radio's current channel through listen(), so a frame heard meanwhile
+  /// (a remote's press on the channel the hub backs off from) reaches the overheard-frame observer
+  /// like one heard inside an exchange's wait.
+  void hear_channel_for_(uint32_t ms);
+
+  /// Count a channel check that found the TX channel busy and tell the transmit observer.
+  /// @param level_dbm The level that made the channel busy (TxResult::cca_level_dbm).
+  void note_busy_check_(int16_t level_dbm);
+
+  /// The last step of every send: log one the radio did not make, report one it made to the transmit
+  /// observer.
+  /// @param frame     The frame sent.
+  /// @param tx_config The transmission it went out with.
+  /// @param len       Its wire length.
+  /// @param result    The radio's answer to the send (never CHANNEL_BUSY here).
+  /// @return Whether the frame went out.
+  bool conclude_send_(const IoFrame &frame, const RadioTxConfig &tx_config, uint8_t len, const TxResult &result);
+
+  /// The next random number for channel access: from the installed source, 0 without one.
+  [[nodiscard]] uint32_t draw_random_() const { return this->random_source_ ? this->random_source_() : 0; }
 
   /// Block until the first response arrives or the wait window expires.
   decisions::ExchangeFirstResponseDisposition wait_for_first_response_(const IoFrame &request,
@@ -692,18 +775,18 @@ class ExchangeEngine {
                                                     bool state_unknown = false) const;
 
   /// The attempt plan an exchange runs on, planned from the options' request: a cap on tries from
-  /// their count, else the plan of their read kind with the transmit time this engine estimates for
-  /// the request (the radio's air time for its start preamble, request_preamble_for()). The one place an
+  /// their count (to a low-power target bounded by that count,
+  /// decisions::AttemptPlan::bounded_by_attempts), else the plan of their read kind with the transmit time this engine
+  /// estimates for the request (the radio's air time for its start preamble, request_preamble_for()). The one place an
   /// exchange is planned, so every plan agrees with the guard that runs each attempt
   /// (try_fits_budget_()).
   ///
   /// A settling read of a low-power receiver whose state the hub has no news of
   /// (decisions::WakeBelief::UNKNOWN, a status read only) leads with one short attempt before the
-  /// wake-up attempts, and when all of them do not fit the exchange budget with it, may run past the
-  /// budget by that attempt's cost (decisions::AttemptPlan::short_lead, budget_allowance_ms); the
-  /// guard honours the same allowance. A read with a fixed preamble, a single-try read and a command
-  /// have no lead. The plan carries the request's state_unknown mark so the exchange resolves the
-  /// same belief when it sends.
+  /// wake-up attempts, and the plan, bounded by its attempt count, runs the lead and all of them
+  /// (decisions::AttemptPlan::short_lead, bounded_by_attempts). A read with a fixed preamble, a single-try read and a
+  /// command have no lead. The plan carries the request's state_unknown mark so the exchange resolves the same belief
+  /// when it sends.
   /// @param request       Frame being sent.
   /// @param freq          RF channel it goes out on (Hz).
   /// @param options       What the caller asked of the exchange.
@@ -723,7 +806,9 @@ class ExchangeEngine {
   /// all (see set_wake_evidence_spent_handler()). Called once, when the exchange has failed.
   /// @param request The exchange's request frame (a STOP never spends the evidence).
   /// @param plan    The preamble plan the exchange was sent with.
-  void spend_wake_evidence_if_silent_(const IoFrame &request, const PreamblePlan &plan);
+  /// @param some_try_is_evidence At least one try was evidence (decisions::silence_is_evidence()); with none,
+  ///        nothing is spent: a request that was never sent, or went onto a busy channel, says nothing.
+  void spend_wake_evidence_if_silent_(const IoFrame &request, const PreamblePlan &plan, bool some_try_is_evidence);
   /// True while the remaining time the target last reported has not run out (decisions::moving_until_holds()).
   [[nodiscard]] bool still_travelling_by_its_own_count_(const IoFrame &request) const;
 
@@ -732,12 +817,13 @@ class ExchangeEngine {
   RadioDriver **radio_ptr_;                       ///< Double-pointer: *radio_ptr_ is always the hub's active driver.
   const uint8_t *node_id_;                        ///< Hub's node_id_[NODE_ID_SIZE] array.
   const uint8_t *system_key_;                     ///< Hub's system_key_[AES_KEY_SIZE] array.
-  const TuningConfig *tuning_;                    ///< Hub's live TuningConfig (read on every LBT check).
+  const TuningConfig *tuning_;                    ///< Hub's live TuningConfig (read on every channel check).
   TransmitObserver *transmit_observer_{nullptr};  ///< Non-owning; see set_transmit_observer().
   OverheardFrameObserver *overheard_frame_observer_{nullptr};  ///< Non-owning; see set_overheard_frame_observer().
   TargetEvidenceProvider target_evidence_provider_;            ///< See set_target_evidence_provider().
   DeviceKeyProvider device_key_provider_;                      ///< See set_device_key_provider().
   WakeEvidenceSpentHandler wake_evidence_spent_handler_;       ///< See set_wake_evidence_spent_handler().
+  RandomSource random_source_;                                 ///< See set_random_source().
 
   // --- Engine state --------------------------------------------------------
 

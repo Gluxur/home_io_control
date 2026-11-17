@@ -14,6 +14,7 @@ from esphome import pins
 from esphome.components import spi
 from esphome.const import CONF_ID
 
+from . import atlantic_heat_pump as atlantic_heat_pump_module
 from . import tuning as tuning_module
 from .hub_names import (
     CONF_ACCEPT_FOREIGN_PAIRING,
@@ -157,6 +158,9 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_DIAGNOSTIC_PROBES, default=False): cv.boolean,
             cv.Optional(CONF_LR1121_FIRMWARE_UPDATE): LR1121_FIRMWARE_UPDATE_SCHEMA,
             cv.Optional(tuning_module.CONF_TUNING): tuning_module.TUNING_CONFIG_SCHEMA,
+            cv.Optional(
+                atlantic_heat_pump_module.CONF_ATLANTIC_HEAT_PUMP
+            ): atlantic_heat_pump_module.ATLANTIC_HEAT_PUMP_SCHEMA,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -274,4 +278,11 @@ async def to_code(config):
         await create_lr1121_firmware_update(config, var)
 
     if tuning_module.CONF_TUNING in config:
-        await tuning_module.to_code(config[tuning_module.CONF_TUNING], var)
+        await tuning_module.to_code(
+            config[tuning_module.CONF_TUNING], var, config[CONF_RADIO_TYPE]
+        )
+
+    if atlantic_heat_pump_module.CONF_ATLANTIC_HEAT_PUMP in config:
+        await atlantic_heat_pump_module.to_code(
+            config[atlantic_heat_pump_module.CONF_ATLANTIC_HEAT_PUMP], var
+        )

@@ -70,6 +70,12 @@ ROWS = (
         members=("warn_if_blocking_over_",),
     ),
     Row(
+        "core/component.h",
+        "core/component.h",
+        "PollingComponent",
+        methods=("set_update_interval", "update", "get_update_interval"),
+    ),
+    Row(
         "core/application.h",
         "core/scheduler.h",
         "Scheduler",

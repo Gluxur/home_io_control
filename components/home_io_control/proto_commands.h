@@ -35,13 +35,12 @@
 ///     `low_power` follows the discovered device's own self-reported power-save class instead, the
 ///     same per-device-property treatment as every non-pairing builder above — every real hub in
 ///     this project's corpus mirrors that class exactly on its own 0x2C.
-///   - The preamble follows the flag. For a start frame the exchange engine uses LONG_PREAMBLE
-///     (1024 bytes) when CTRL1_LOW_POWER is set — the wake‑up burst for a sleeping receiver —
-///     and the runtime‑tunable `normal_start_preamble` otherwise; follow‑up frames use the
-///     driver's response_preamble() (exchange_engine.cpp). Both derive from the same
-///     per‑device property, so the flag never promises a wake-up burst the device does not need,
-///     with two exceptions. Pairing's directed start frames (0x2C, 0x31, 0x6F) never use a longer
-///     preamble than the discovery request the device just answered
+///   - The preamble follows the flag. For a start frame the exchange engine uses the wake-up
+///     preamble (`low_power_wake_ms`, default LOW_POWER_WAKE_MS) when CTRL1_LOW_POWER is set — the wake‑up
+///     burst for a sleeping receiver — and the runtime‑tunable `start_preamble_ms` otherwise; follow‑up frames use
+///     the driver's response_preamble() (exchange_engine.cpp). Both derive from the same per‑device property, so the
+///     flag never promises a wake-up burst the device does not need, with two exceptions. Pairing's directed start
+///     frames (0x2C, 0x31, 0x6F) never use a longer preamble than the discovery request the device just answered
 ///     (pairing_start_preamble()). And send_and_receive() may lead a low-power
 ///     target's tries with the short preamble while the target is believed awake (ADR 0040), with
 ///     the frame bytes — flag included — unchanged.
@@ -528,7 +527,11 @@ bool create_set_name(IoFrame &f, const uint8_t *own, const uint8_t *dst, bool lo
 /// Values follow the public VELUX KLF 200 API (version 3.18, section 10.4.1, table 194), which
 /// describes the gateway's API rather than the radio frame; that data[1] of CMD_IDENTIFY carries
 /// the same value is our reading, and both results of issue #241 fit it (ADR 0093).
-/// \todo Unconfirmed on hardware: no device has been seen to honour a stop.
+/// Confirmed on a VELUX roof-window actuator (type 4, subtype 1; issue #241, one run with the
+/// reporter's own controller): a jogging window finished its return movement and reported done
+/// about 5 s after the stop.
+/// \todo Unconfirmed on hardware for other devices, Somfy ones included, and with this component's
+/// own radio path.
 static constexpr uint8_t IDENTIFY_WINK_STOP = 0;
 /// Longest explicit wink time in seconds (table 194: 1 to 253 are seconds).
 static constexpr uint8_t IDENTIFY_WINK_MAX_SECONDS = 253;
@@ -536,8 +539,11 @@ static constexpr uint8_t IDENTIFY_WINK_MAX_SECONDS = 253;
 /// identifies for the time its maker picked and the identify ends on its own.
 /// Table 194 also defines 255 as "wink forever"; the hub never sends it (a VELUX window kept
 /// jogging for more than 45 s with it, only a stop ended it).
-/// \todo Unconfirmed on hardware: expected to work on VELUX windows (issue #241); not yet seen on
-/// the Somfy awning or the Izymo dimmer.
+/// Confirmed on a VELUX roof-window actuator (type 4, subtype 1; issue #241, one run with the
+/// reporter's own controller): the window jogged, returned to its start position and reported
+/// done about 26 s after the request.
+/// \todo Unconfirmed on hardware for other devices, including the Somfy awning and the Izymo
+/// dimmer, and with this component's own radio path.
 static constexpr uint8_t IDENTIFY_WINK_DEVICE_DEFAULT = 254;
 
 /// @brief Build an authenticated device-identify request (0x1E) that makes a device
@@ -685,15 +691,17 @@ bool create_subscribe_event(IoFrame &f, const uint8_t *own, const uint8_t *dst, 
 bool create_unsubscribe_event(IoFrame &f, const uint8_t *own, const uint8_t *dst, uint16_t event_id, bool low_power);
 
 /// Build the request that opens a read of one device object (CMD_TRANSFER_OPEN 0x46) for the
-/// `read_object` diagnostic probe (ADR 0062). The payload is
-/// `<ORIGINATOR_SAAC> <class> 00 <id hi> <id lo> 00 00 00 00`, the form Somfy controllers use to read
-/// a whole object; Somfy actuators answered it for class-0 objects (issue #156). Only the class/id pairs
-/// in TRANSFER_READABLE_OBJECTS are accepted, so this builder cannot name any other object, and there
-/// is no builder for the write twin (0x48).
+/// `read_object` diagnostic probe (ADR 0062) and the `atlantic_heat_pump` block. The payload is
+/// `<ORIGINATOR_SAAC> <class> 00 <id hi> <id lo> <offset hi> <offset lo> 00 00`. With offset 0 it is the
+/// form Somfy controllers use to read a whole object; Somfy actuators answered it for class-0 objects
+/// (issue #156). A TaHoma reads the entries of an Atlantic heat pump with a non-zero offset in class 0x0C.
+/// Only the class/id pairs in TRANSFER_READABLE_OBJECTS (offset 0) and the Atlantic entries in
+/// TRANSFER_OFFSETS_ATLANTIC are accepted, so this builder cannot name any other object, and there is no
+/// builder for the write twin (0x48).
 /// @param f IoFrame to populate.
 /// @param own Controller's 3-byte node ID.
 /// @param dst Target device's 3-byte node ID.
-/// @param object The class and id to open; must be an entry of TRANSFER_READABLE_OBJECTS.
+/// @param object The class, id and offset to open (see above).
 /// @param low_power True if the target is a low-power / duty-cycled device (sets CTRL1_LOW_POWER).
 /// @return true on success, false for an object outside the allowlist.
 bool create_transfer_open(IoFrame &f, const uint8_t *own, const uint8_t *dst, const TransferObject &object,

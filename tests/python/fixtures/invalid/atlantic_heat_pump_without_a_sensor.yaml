@@ -1,0 +1,10 @@
+# expect-error: 'atlantic_heat_pump' needs 'heating_energy' and/or 'hot_water_energy'
+# covers: atlantic_heat_pump._validate_has_sensor
+# A block with no counter to publish would only send radio reads for nothing.
+packages:
+  common: !include ../_common.yaml
+  board: !include ../../../../config/boards/heltec-v3.yaml
+
+home_io_control:
+  atlantic_heat_pump:
+    io_device_id: "FEEB1E"

@@ -15,6 +15,7 @@
 /// entities' reach. The headers included here are the types the method signatures name; this header
 /// never includes a hub header.
 
+#include "atlantic_reader.h"
 #include "device_registry.h"
 #include "esphome/core/hal.h"
 #include "oneway_controller.h"
@@ -135,6 +136,14 @@ class HubDevicePort {
   /// @brief Queue a read of the device's name.
   /// @param device_id Hexadecimal node ID string.
   virtual void queue_request_device_name(const std::string &device_id) = 0;
+
+  /// @brief Queue a read of one entry of an Atlantic heat pump's data object (AtlanticReader::queue()).
+  /// @param device_id Hexadecimal node ID string of the heat pump.
+  /// @param offset Entry offset, one of TRANSFER_OFFSETS_ATLANTIC.
+  /// @param max Longest answer accepted, in bytes.
+  /// @param done Called once, from the main loop, when the read ends.
+  virtual void queue_atlantic_read(const std::string &device_id, uint16_t offset, uint16_t max,
+                                   AtlanticReadDone done) = 0;
 
   /// @brief Queue a named command (stop, favorite, vent, ...).
   /// @param device_id Hexadecimal node ID string.

@@ -180,9 +180,9 @@ class ManagementActions {
   /// more answer, the report says so explicitly rather than quietly listing a subset.
   ///
   /// Sweeps two passes, low-power first, then always-alive — six attempts total (three channels
-  /// per pass): CH2/CH1/CH3 with `CTRL1 = LOW_POWER | ACK` and `LONG_PREAMBLE` (the header a real
+  /// per pass): CH2/CH1/CH3 with `CTRL1 = LOW_POWER | ACK` and the wake-up preamble (the header a real
   /// VELUX KLR300 uses for its own roll-call, whose low-power shutters answered it), then
-  /// CH2/CH1/CH3 with `CTRL1 = 0x00` and the tunable `normal_start_preamble`. Low-power first so a sleeper that answers
+  /// CH2/CH1/CH3 with `CTRL1 = 0x00` and the tunable `start_preamble_ms`. Low-power first so a sleeper that answers
   /// late is still collected by the later always-alive windows; in the opposite order a late
   /// low-power reply would fall off the end of the scan. The low-power pass listens on all three
   /// channels including the one it transmitted on (real VELUX low-power replies have been
@@ -203,9 +203,9 @@ class ManagementActions {
   /// `KeyExtractionResponder::send_reply_()`'s implementation comment).
   ///
   /// This still blocks the caller for the full six-window duration (roughly
-  /// `6 × pairing_discovery_wait_ms` plus three ~213 ms LONG_PREAMBLE transmits, ~12.7 s at the
-  /// 2000 ms default) and therefore trips ESPHome's "operation took a long time" warning on
-  /// *every* invocation. That warning uses a per-component ratchet
+  /// `6 × pairing_discovery_wait_ms` plus three wake-up transmits of 427 to 533 ms depending on the
+  /// radio's `RadioDriver::tx_air_time_us()`, ~13.3 to 13.6 s at the 2000 ms default) and therefore trips ESPHome's
+  /// "operation took a long time" warning on *every* invocation. That warning uses a per-component ratchet
   /// (`Component::should_warn_of_blocking()`): it starts at 50 ms and, each time it fires, raises
   /// its own threshold to the observed duration plus a margin — but the threshold is stored in
   /// centiseconds in a `uint8_t`, so it saturates at **2550 ms**. Anything that blocks longer than

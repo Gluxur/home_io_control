@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -49,6 +50,24 @@ class HighFrequencyLoopRequester {
   bool started_{false};
   static inline uint8_t num_requests{0};
 };
+
+/// Buffer size format_hex_pretty_to() needs for @p byte_count bytes ("XX:XX:...:XX\0").
+constexpr size_t format_hex_pretty_size(size_t byte_count) { return byte_count * 3; }
+
+/// Same output as ESPHome's: uppercase hex pairs joined by @p separator, cut to fit @p buffer.
+template<size_t N>
+inline char *format_hex_pretty_to(char (&buffer)[N], const uint8_t *data, size_t length, char separator = ':') {
+  static constexpr char DIGITS[] = "0123456789ABCDEF";
+  size_t pos = 0;
+  for (size_t i = 0; i < length && pos + (i > 0 ? 3 : 2) < N; i++) {
+    if (i > 0)
+      buffer[pos++] = separator;
+    buffer[pos++] = DIGITS[data[i] >> 4];
+    buffer[pos++] = DIGITS[data[i] & 0x0F];
+  }
+  buffer[pos] = '\0';
+  return buffer;
+}
 
 namespace test_random {
 /// Make every following random_uint32() call return @p value.
