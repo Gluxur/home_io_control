@@ -55,6 +55,7 @@ AUTOLINK_IGNORE_WORDS  = home_io_control esphome \
                         docs/configuration/climate.md \
                         docs/heating.md \
                         docs/configuration/cover.md \
+                        docs/configuration/atlantic-heat-pump.md \
                         docs/diagnostic-probes.md \
                         diagnostic-entities.md \
                         docs/key-extraction.md \

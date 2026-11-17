@@ -73,6 +73,21 @@ class Component {
   uint8_t warn_if_blocking_over_{0};
 };
 
+/// Host stub of ESPHome's PollingComponent: it only holds the interval; a test calls update() itself.
+class PollingComponent : public Component {
+ public:
+  PollingComponent() = default;
+  explicit PollingComponent(uint32_t update_interval) : update_interval_(update_interval) {}
+  void set_update_interval(uint32_t update_interval) { this->update_interval_ = update_interval; }
+  virtual void update() = 0;
+  virtual uint32_t get_update_interval() const { return this->update_interval_; }
+
+ protected:
+  uint32_t update_interval_{0};
+};
+
+#define LOG_UPDATE_INTERVAL(this) (void) (this)
+
 // Setup priority constants (approximate)
 struct setup_priority {
   static constexpr float BEFORE_BOOT = -100.0f;

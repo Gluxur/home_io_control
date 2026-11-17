@@ -67,16 +67,16 @@ constexpr uint8_t PROBE_READ_OBJECT_MAX_INDEX = TRANSFER_READABLE_OBJECT_COUNT -
 /// Pause before each block request and before the close. An RS100 Solar io missed every block request sent
 /// right after its previous answer and answered every re-send, which left about 650 ms after that answer
 /// (issue #156). Waiting that long first saves one long-preamble transmission per block.
-constexpr uint32_t PROBE_READ_OBJECT_BLOCK_GAP_MS = 650;
+constexpr uint32_t PROBE_READ_OBJECT_BLOCK_GAP_MS = TRANSFER_BLOCK_GAP_MS;
 /// Longest object `read_object` pulls: 24 blocks (432 bytes), the smallest whole-block cap that covers the
 /// longest length a real device has announced (431 bytes, issue #156). A device announcing more is closed again
 /// unread, so a misreading cannot turn into a long run of transmissions on the shared band. The cost: on that
 /// low-power device a 14-block read blocked the loop for 16.4 s, so 24 blocks take about 28 s nominally and, with
 /// up to 3 tries per block, can pass 60 s. The ESPHome API tolerates that (its server only drops a client after
 /// 150 s without traffic), and the probe is manual, one object per call.
-constexpr uint16_t PROBE_READ_OBJECT_MAX_BYTES = 24 * TRANSFER_BLOCK_SIZE;
+constexpr uint16_t PROBE_READ_OBJECT_MAX_BYTES = TRANSFER_READ_MAX_BYTES;
 /// Data bytes per log line when `read_object` prints what it read (short enough for the log's line limit).
-constexpr uint8_t PROBE_READ_OBJECT_LOG_BYTES_PER_LINE = 24;
+constexpr uint8_t PROBE_READ_OBJECT_LOG_BYTES_PER_LINE = TRANSFER_LOG_BYTES_PER_LINE;
 /// "object 0xNNNN class NNN handle 0xNN status NNN length NNNNN" plus the terminator.
 constexpr size_t PROBE_READ_OBJECT_HEADER_BUFFER_SIZE = 72;
 /// "event 0xNNNN, NNN data bytes" plus the terminator.

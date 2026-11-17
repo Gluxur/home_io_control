@@ -10,6 +10,7 @@
 #include "corpus_test_helpers.h"
 #include "test_helpers.h"
 
+#include <array>
 #include <cstring>
 #include <functional>
 #include <gtest/gtest.h>
@@ -538,6 +539,48 @@ TEST(ProtoCommandsProbeBuilders, TransferOpenTableKeepsItsFirstIndexesAndClasses
       EXPECT_FALSE(TRANSFER_READABLE_OBJECTS[i].object_class == TRANSFER_READABLE_OBJECTS[j].object_class &&
                    TRANSFER_READABLE_OBJECTS[i].id == TRANSFER_READABLE_OBJECTS[j].id)
           << int(i) << " " << int(j);
+}
+
+TEST(ProtoCommandsProbeBuilders, TransferOpensOfAnAtlanticCounterMatchTheTahomaRead) {
+  // A TaHoma reading the hot-water counter of an Atlantic heat pump, captured on air: the prepare open,
+  // answered empty, then the data open, answered with length 3 and the block `80 24 AC`.
+  //   46  08 0C 00 10 01 00 25 00 00
+  //   46  08 0C 00 10 02 00 25 00 00
+  const struct {
+    uint16_t object;
+    uint8_t id_lo;
+  } cases[] = {{TRANSFER_OBJECT_ATLANTIC_PREPARE, 0x01}, {TRANSFER_OBJECT_ATLANTIC_DATA, 0x02}};
+  for (const auto &c : cases) {
+    IoFrame frame{};
+    ASSERT_TRUE(create_transfer_open(
+        frame, test::OWN_ID, test::DST_ID,
+        {TRANSFER_OBJECT_CLASS_ATLANTIC, c.object, TRANSFER_OFFSET_ATLANTIC_HOT_WATER_ENERGY}, false));
+    EXPECT_EQ(frame.cmd, CMD_TRANSFER_OPEN);
+    const std::array<uint8_t, TRANSFER_OPEN_DATA_SIZE> expected{0x08, 0x0C, 0x00, 0x10, c.id_lo,
+                                                                0x00, 0x25, 0x00, 0x00};
+    ASSERT_EQ(frame.data_len, expected.size());
+    EXPECT_EQ(0, std::memcmp(frame.data, expected.data(), expected.size())) << std::hex << c.object;
+  }
+}
+
+TEST(ProtoCommandsProbeBuilders, TransferOpenRefusesAnAtlanticOffsetOutsideTheAllowlist) {
+  IoFrame frame{};
+  // The whole object, the room-temperature entries the thermostats write, and offsets no TaHoma reads.
+  for (uint16_t offset : {0x0000, 0x0024, 0x018A, 0x018B, 0x0200, 0xFFFF}) {
+    EXPECT_FALSE(create_transfer_open(frame, test::OWN_ID, test::DST_ID,
+                                      {TRANSFER_OBJECT_CLASS_ATLANTIC, TRANSFER_OBJECT_ATLANTIC_DATA, offset}, false))
+        << std::hex << offset;
+  }
+  // Every listed offset opens, in both objects; none of them on a Somfy object.
+  for (uint16_t offset : TRANSFER_OFFSETS_ATLANTIC)
+    for (uint16_t object : {TRANSFER_OBJECT_ATLANTIC_PREPARE, TRANSFER_OBJECT_ATLANTIC_DATA})
+      EXPECT_TRUE(create_transfer_open(frame, test::OWN_ID, test::DST_ID,
+                                       {TRANSFER_OBJECT_CLASS_ATLANTIC, object, offset}, false))
+          << std::hex << offset;
+  // A listed offset on a Somfy object.
+  EXPECT_FALSE(create_transfer_open(frame, test::OWN_ID, test::DST_ID,
+                                    {TRANSFER_OBJECT_CLASS_SOMFY, 0xA601, TRANSFER_OFFSET_ATLANTIC_HEATING_ENERGY},
+                                    false));
 }
 
 TEST(ProtoCommandsProbeBuilders, TransferOpenRefusesEveryObjectOutsideTheAllowlist) {

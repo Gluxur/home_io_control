@@ -718,21 +718,29 @@ bool create_unsubscribe_event(IoFrame &f, const uint8_t *own, const uint8_t *dst
 bool create_transfer_open(IoFrame &f, const uint8_t *own, const uint8_t *dst, const TransferObject &object,
                           bool low_power) {
   bool allowed = false;
-  for (const TransferObject &entry : TRANSFER_READABLE_OBJECTS)
-    allowed = allowed || (entry.object_class == object.object_class && entry.id == object.id);
+  for (const TransferObject &entry : TRANSFER_READABLE_OBJECTS) {
+    allowed = allowed ||
+              (entry.object_class == object.object_class && entry.id == object.id && entry.offset == object.offset);
+  }
+  if (object.object_class == TRANSFER_OBJECT_CLASS_ATLANTIC &&
+      (object.id == TRANSFER_OBJECT_ATLANTIC_PREPARE || object.id == TRANSFER_OBJECT_ATLANTIC_DATA)) {
+    for (const uint16_t offset : TRANSFER_OFFSETS_ATLANTIC)
+      allowed = allowed || offset == object.offset;
+  }
   if (!allowed)
     return false;
   const uint16_t object_id = object.id;
   init_request(f, own, dst, low_power);
-  // Originator, object class, a zero byte, the object id big-endian, then two zero words (offset and
-  // length of the part wanted, left zero to ask for the whole object).
+  // Originator, object class, a zero byte, the object id big-endian, then the offset and length of the
+  // part wanted. The length is always zero (the whole entry); the offset is zero for a whole object and
+  // names the entry of an Atlantic object.
   const uint8_t d[TRANSFER_OPEN_DATA_SIZE] = {ORIGINATOR_SAAC,
                                               object.object_class,
                                               0x00,
                                               static_cast<uint8_t>(object_id >> 8),
                                               static_cast<uint8_t>(object_id & 0xFF),
-                                              0x00,
-                                              0x00,
+                                              static_cast<uint8_t>(object.offset >> 8),
+                                              static_cast<uint8_t>(object.offset & 0xFF),
                                               0x00,
                                               0x00};
   return set_cmd(f, CMD_TRANSFER_OPEN, d, sizeof(d));

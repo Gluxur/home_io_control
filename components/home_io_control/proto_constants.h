@@ -194,10 +194,11 @@ static constexpr uint8_t CMD_CHALLENGE_RESP =
 // Data transport block (0x46-0x4B)
 static constexpr uint8_t CMD_TRANSFER_OPEN =
     0x46;  ///< Opens a read of one object: nine payload bytes `<originator> <class> 00 <id hi> <id lo>
-           ///< 00 00 00 00`. A Somfy Izymo answered it unauthenticated and challenged the block reads. Sent only by the
-           ///< `read_object` diagnostic probe (ADR 0062) and only for the objects in TRANSFER_OBJECT_*;
-           ///< create_transfer_open() refuses every other id. The sibling 0x48 opens a write and has no builder
-           ///< anywhere in this codebase.
+           ///< <offset u16> 00 00` (offset 0 for a whole object). A Somfy Izymo answered it unauthenticated and
+           ///< challenged the block reads. Sent by the `read_object` diagnostic probe (ADR 0062) for the objects in
+           ///< TRANSFER_READABLE_OBJECTS and by the `atlantic_heat_pump` block for TRANSFER_OFFSETS_ATLANTIC;
+           ///< create_transfer_open() refuses the rest. The sibling 0x48 opens a write and has no builder anywhere in
+           ///< this codebase.
 static constexpr uint8_t CMD_TRANSFER_OPEN_RESP =
     0x47;  ///< Answer to CMD_TRANSFER_OPEN: `<handle> <status> <length u16 BE>`. Status 0 = accepted,
            ///< 1 = adapted, anything else an error; length 0 means there is nothing to read.
@@ -253,12 +254,43 @@ static constexpr uint8_t TRANSFER_STATUS_ADAPTED = 1;   ///< CMD_TRANSFER_OPEN_R
 /// object rather than a refusal (issue #156).
 static constexpr uint8_t TRANSFER_STATUS_NOTHING_TO_READ = 7;
 static constexpr uint16_t TRANSFER_CHUNK_CLOSE = 0;  ///< Chunk number of the closing CMD_UNKNOWN4A_REQ.
+/// Pause before each block request and before the close. An RS100 Solar io missed every block request sent
+/// right after its previous answer and answered every re-send, which left about 650 ms after that answer
+/// (issue #156). Waiting that long first saves one long-preamble transmission per block.
+static constexpr uint32_t TRANSFER_BLOCK_GAP_MS = 650;
+/// Longest object read: 24 blocks (432 bytes), the smallest whole-block cap that covers the longest length a
+/// real device has announced (431 bytes, issue #156). A device announcing more is closed again unread.
+static constexpr uint16_t TRANSFER_READ_MAX_BYTES = 24 * TRANSFER_BLOCK_SIZE;
+/// Data bytes per log line when a read object is printed (short enough for the log's line limit).
+static constexpr uint8_t TRANSFER_LOG_BYTES_PER_LINE = 24;
 /// @}
 
-/// @brief One object a CMD_TRANSFER_OPEN can name: its class byte and its 16-bit id.
+/// Object class of the Atlantic heat pump objects (heat pump 22/1, offsets in TRANSFER_OFFSETS_ATLANTIC). Seen on air
+/// from a TaHoma reading an Atlantic heat pump, unauthenticated; the class has no published name.
+static constexpr uint8_t TRANSFER_OBJECT_CLASS_ATLANTIC = 0x0C;
+/// @name Atlantic heat pump objects a TaHoma reads by offset
+/// A TaHoma opens every entry twice, a few hundred ms apart: first in 0x1001, which the heat pump answers
+/// with an empty open (`00 00 00 00`), then in 0x1002, which it answers with the data. Over a day of captures
+/// 91 of 96 heard answers to a 0x1001 open were empty and 155 of 249 answers to a 0x1002 open carried data.
+/// What the first open is for is unknown; it is sent the same way here. The Navilink room thermostats write
+/// their room temperature with the 0x48 twin at offsets 0x018A/0x018B.
+/// @{
+static constexpr uint16_t TRANSFER_OBJECT_ATLANTIC_PREPARE = 0x1001;
+static constexpr uint16_t TRANSFER_OBJECT_ATLANTIC_DATA = 0x1002;
+/// @}
+/// @name Offsets of the Atlantic energy counters in TRANSFER_OBJECT_ATLANTIC_DATA
+/// Each answers with three bytes, `80 <kWh u16 BE>`, matching the heating and hot-water totals the TaHoma
+/// app shows. The TaHoma reads them about once an hour.
+/// @{
+static constexpr uint16_t TRANSFER_OFFSET_ATLANTIC_HEATING_ENERGY = 0x0023;
+static constexpr uint16_t TRANSFER_OFFSET_ATLANTIC_HOT_WATER_ENERGY = 0x0025;
+/// @}
+
+/// @brief One object a CMD_TRANSFER_OPEN can name: its class byte, its 16-bit id and an offset inside it.
 struct TransferObject {
-  uint8_t object_class{TRANSFER_OBJECT_CLASS_DEVICE};  ///< TRANSFER_OBJECT_CLASS_DEVICE or TRANSFER_OBJECT_CLASS_SOMFY.
+  uint8_t object_class{TRANSFER_OBJECT_CLASS_DEVICE};  ///< TRANSFER_OBJECT_CLASS_DEVICE, _SOMFY or _ATLANTIC.
   uint16_t id{0};                                      ///< Object id, sent big-endian.
+  uint16_t offset{0};  ///< Offset of the part wanted, sent big-endian; 0 reads the whole object (Somfy objects).
 };
 
 /// @brief Every object the `read_object` probe can open, in probe-index order (ADR 0062).
@@ -305,6 +337,15 @@ static constexpr TransferObject TRANSFER_READABLE_OBJECTS[] = {
     {TRANSFER_OBJECT_CLASS_SOMFY, 0xA617},
     {TRANSFER_OBJECT_CLASS_SOMFY, 0xA618},
 };
+/// @brief Every Atlantic heat pump entry a TaHoma was heard reading. create_transfer_open() opens these offsets,
+/// and only these, in TRANSFER_OBJECT_ATLANTIC_PREPARE and TRANSFER_OBJECT_ATLANTIC_DATA (read-only). Most are
+/// tables of 16 zones; see docs/configuration/atlantic-heat-pump.md for the decoded ones.
+static constexpr uint16_t TRANSFER_OFFSETS_ATLANTIC[] = {
+    0x0001, 0x0002, 0x0003, 0x0004, 0x0006, 0x0007, 0x0008, 0x0019, 0x001D, 0x001F, 0x0020, 0x0021,
+    0x0023, 0x0025, 0x0027, 0x002A, 0x002E, 0x0041, 0x0045, 0x005C, 0x0062, 0x0073, 0x0084, 0x0088,
+    0x0099, 0x00BD, 0x00CE, 0x00F0, 0x0104, 0x0108, 0x010A, 0x011B, 0x012B, 0x013C, 0x013D, 0x013E,
+    0x013F, 0x0140, 0x0141, 0x0142, 0x0143, 0x0154, 0x0171, 0x0172, 0x0173, 0x0175, 0x0177, 0x0178,
+    0x0189, 0x019B, 0x019F, 0x01A6, 0x01BB, 0x01CC, 0x01DD, 0x02D8, 0x02DA, 0x02DD, 0x03C2};
 /// Number of entries in TRANSFER_READABLE_OBJECTS.
 static constexpr uint8_t TRANSFER_READABLE_OBJECT_COUNT =
     sizeof(TRANSFER_READABLE_OBJECTS) / sizeof(TRANSFER_READABLE_OBJECTS[0]);

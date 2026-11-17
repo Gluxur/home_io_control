@@ -48,6 +48,7 @@
 #include "exchange_engine.h"
 #include "pairing_engine.h"
 #include "management_actions.h"
+#include "atlantic_reader.h"
 #include "heater_controller.h"
 #include "hub_ports.h"
 #include "key_extraction_responder.h"
@@ -123,6 +124,7 @@ class IOHomeControlComponent : public Component,
         management_actions_(node_id_, system_key_, &tuning_, exchange_engine_, registry_, &initialized_, this),
         heater_controller_(node_id_, &initialized_, &radio_, registry_, poll_policy_, exchange_engine_,
                            this->make_heater_controller_hub_()),
+        atlantic_reader_(node_id_, this->make_atlantic_reader_hub_()),
         // Capturing `this` is safe here: the callback is only ever invoked from send_burst(),
         // long after construction. It injects the *ability* to transmit rather than a reference
         // to whichever collaborator currently owns the radio. `&tuning_` is read per burst
@@ -790,6 +792,11 @@ class IOHomeControlComponent : public Component,
   /// passes, three channels each; fewer if `scan_power_classes` narrows the sweep) and will log the
   /// "operation took a long time" warning, same as the action — see docs/pairing.md.
   void trigger_scan_paired_devices() override;
+  /// Part of HubDevicePort. @see AtlanticReader::queue()
+  void queue_atlantic_read(const std::string &device_id, uint16_t offset, uint16_t max,
+                           AtlanticReadDone done) override {
+    this->atlantic_reader_.queue(device_id, offset, max, std::move(done));
+  }
   /// Async form of set_light_position() that keeps radio work serialized on the main loop.
   /// queue_set_light_state() is a thin binary-position wrapper around this.
   /// @param device_id Target device ID.
@@ -1233,6 +1240,9 @@ class IOHomeControlComponent : public Component,
   /// exchange and execute helpers; called from the initializer list, so every lambda only captures `this`.
   /// @return The injected calls.
   HeaterControllerHub make_heater_controller_hub_();
+  /// @brief Build the calls the Atlantic heat pump reader reaches the hub through (hub_atlantic.cpp).
+  /// Same reason as make_heater_controller_hub_(): protected set_timeout() and the hub's exchange.
+  AtlanticReaderHub make_atlantic_reader_hub_();
   /// Apply backoff after a failed background status poll and log the result.
   /// @param device_id Target device ID.
   /// @param auth_like True when the failed exchange saw a 0x3C challenge.
@@ -1375,6 +1385,8 @@ class IOHomeControlComponent : public Component,
   /// initialized_, node_id_ and exchange_engine_, which it references, so member-init order matches the
   /// initializer list.
   HeaterController heater_controller_;
+  /// Queued reads of Atlantic heat pump entries (atlantic_reader.h). Declared after node_id_.
+  AtlanticReader atlantic_reader_;
   /// Owns the 1W controller identities, their rolling-sequence counters and the transmit burst.
   /// The third collaborator that drives the radio (ADR 0004), and the only one that awaits
   /// nothing — 1W has no reply to wait for.

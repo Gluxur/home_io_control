@@ -102,6 +102,18 @@ class DevicePortDouble : public HubDevicePort {
   void queue_request_device_name(const std::string &device_id) override {
     this->queued_.push_back({PendingOperationType::REQUEST_NAME, device_id, 0});
   }
+  /// One queue_atlantic_read() call, kept so a test can answer it through `done`.
+  struct AtlanticReadCall {
+    std::string device_id;
+    uint16_t offset;
+    uint16_t max;
+    AtlanticReadDone done;
+  };
+  void queue_atlantic_read(const std::string &device_id, uint16_t offset, uint16_t max,
+                           AtlanticReadDone done) override {
+    this->atlantic_reads_.push_back({device_id, offset, max, std::move(done)});
+  }
+  std::vector<AtlanticReadCall> atlantic_reads_;
   bool queue_device_command(const std::string &device_id, CoverCommand cmd) override {
     PendingOperation op{};
     op.type = PendingOperationType::DEVICE_COMMAND;

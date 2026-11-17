@@ -1,0 +1,13 @@
+# expect-error: update_interval must be at least 5min
+# covers: atlantic_heat_pump._validate_update_interval
+# Each read is a radio exchange on a duty-cycled band.
+packages:
+  common: !include ../_common.yaml
+  board: !include ../../../../config/boards/heltec-v3.yaml
+
+home_io_control:
+  atlantic_heat_pump:
+    io_device_id: "FEEB1E"
+    update_interval: 4min
+    heating_energy:
+      name: "Heat pump heating energy"
