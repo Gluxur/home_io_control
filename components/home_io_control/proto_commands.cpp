@@ -717,6 +717,8 @@ bool create_unsubscribe_event(IoFrame &f, const uint8_t *own, const uint8_t *dst
 /// Build the transfer-open request (see the header for the allowlist and the byte layout).
 bool create_transfer_open(IoFrame &f, const uint8_t *own, const uint8_t *dst, const TransferObject &object,
                           bool low_power) {
+  // The allowlist keeps both callers read-only: `read_object` may only open the listed objects whole
+  // (offset 0, hence the offset in the match), the Atlantic reader only the listed entries.
   bool allowed = false;
   for (const TransferObject &entry : TRANSFER_READABLE_OBJECTS) {
     allowed = allowed ||

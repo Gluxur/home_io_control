@@ -39,13 +39,26 @@ struct AtlanticReaderHub {
 /// between two requests is a timeout, so the loop runs in between. A step waits while the hub keeps the
 /// radio, and while another controller uses the data transport (on_frame()). A data open answered empty
 /// is re-sent once.
+///
+/// Why it is built this way:
+/// - One read at a time, in a queue: the heat pump serves one transfer at a time, and it keeps the handle of
+///   an opened transfer until it is closed.
+/// - Not blocking: a read of a few blocks takes several seconds once the gaps are counted. Done in one go,
+///   it would stall loop(), and with it the API, the covers and the other devices.
+/// - Gives way: the room thermostats (and a TaHoma, if any) write and read the same heat pump the same way.
+///   A transfer of ours open at the same time makes the heat pump answer them late or refuse them (status 6),
+///   and the thermostats then repeat their write. Heating comes first.
+/// - Read-only by construction: create_transfer_open() refuses any object or offset outside its allowlist,
+///   and there is no builder for the write (0x48).
 class AtlanticReader {
  public:
   /// Waiting reads allowed behind the one in progress: a full scan of TRANSFER_OFFSETS_ATLANTIC plus the
   /// periodic reads that join it.
   static constexpr size_t QUEUE_MAX = 80;
   /// Quiet time required after the last transfer frame of another controller. A TaHoma app session
-  /// reads ~35 entries with gaps under a second; its 10-min polls take a few seconds.
+  /// reads ~35 entries with gaps under a second; its 10-min polls take a few seconds. A room thermostat's
+  /// write takes a second or two, every ~93 s per thermostat: with two of them, reads wait up to a third of
+  /// the time, which only delays them.
   static constexpr uint32_t FOREIGN_HOLD_MS = 15000;
   /// Re-check delay of a read waiting for that quiet time.
   static constexpr uint32_t FOREIGN_RETRY_MS = 1000;

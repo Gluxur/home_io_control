@@ -861,6 +861,8 @@ void IOHomeControlComponent::handle_oneway_frame_(const IoFrame &frame, uint32_t
 void IOHomeControlComponent::on_overheard_frame(const IoFrame &frame, const RadioRxPacket & /*packet*/,
                                                 int16_t rssi_dbm, uint32_t now) {
   this->oneway_receiver_.keep_overheard(frame, now, rssi_dbm);
+  // Frames heard while the hub waits for an answer come here, not through process_received_packet_(): a
+  // thermostat writing to the heat pump during one of our reads must still hold the reads off.
   this->atlantic_reader_.on_frame(frame);
 }
 

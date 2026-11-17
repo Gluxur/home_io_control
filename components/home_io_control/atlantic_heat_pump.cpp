@@ -20,6 +20,8 @@ constexpr size_t ATLANTIC_OFFSET_COUNT = sizeof(TRANSFER_OFFSETS_ATLANTIC) / siz
 }  // namespace
 
 void AtlanticHeatPumpEnergy::setup() {
+  // Registered so the reader finds its node id and power class. As HEAT_PUMP, it gets no status polls,
+  // no reaction to foreign frames, and no cover/climate entity: this block is its only user.
   DeviceConfig config;
   config.type = DeviceType::HEAT_PUMP;
   config.subtype = 1;
@@ -40,9 +42,12 @@ void AtlanticHeatPumpEnergy::update() {
 }
 
 void AtlanticHeatPumpEnergy::read_into_(uint16_t offset, sensor::Sensor *sensor) {
+  // One block is plenty for a 3-byte counter. Captured by value: the callback runs long after this returns.
   this->read(offset, TRANSFER_BLOCK_SIZE, [this, offset, sensor](bool complete, const uint8_t *data, uint16_t len) {
+    // A failed read publishes nothing and keeps the last value; the next update() tries again.
     if (!complete)
       return;
+    // `81 FF FF` is the heat pump's "no value right now", seen now and then on any entry: not a counter.
     if (len != ATLANTIC_COUNTER_SIZE || data[0] != ATLANTIC_COUNTER_MARKER) {
       ESP_LOGW(TAG, "%s: offset 0x%04X: unexpected answer (%u bytes)", this->device_id_.c_str(),
                static_cast<unsigned>(offset), static_cast<unsigned>(len));
@@ -66,7 +71,9 @@ void AtlanticHeatPumpEnergy::scan() {
   }
   this->scanning_ = true;
   ESP_LOGI(TAG, "%s: scanning %u entries", this->device_id_.c_str(), static_cast<unsigned>(ATLANTIC_OFFSET_COUNT));
-  // The reads queue up and run one after the other; the last callback ends the scan.
+  // The reads queue up and run one after the other; the last callback ends the scan. The reader calls back
+  // every read once and in order, so this holds even when some reads fail. The bytes are logged raw: the
+  // layout of most entries is still unknown, and the log is what people can share to decode them.
   for (size_t i = 0; i < ATLANTIC_OFFSET_COUNT; i++) {
     const uint16_t offset = TRANSFER_OFFSETS_ATLANTIC[i];
     const bool last = i + 1 == ATLANTIC_OFFSET_COUNT;
